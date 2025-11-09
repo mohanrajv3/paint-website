@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { cn } from '@/lib/utils';
-import { DrawingEngine, Point } from '@/lib/drawingEngine';
+import { DrawingEngine } from '@/lib/drawingEngine';
 import { type DrawingOperation } from '@shared/schema';
 import { nanoid } from 'nanoid';
 
@@ -12,7 +12,6 @@ interface DrawingCanvasProps {
   onDrawStart?: (operationId: string) => void;
   onDrawStroke?: (operation: DrawingOperation) => void;
   onDrawEnd?: (operation: DrawingOperation) => void;
-  onRemoteOperation?: (operation: DrawingOperation) => void;
   onCursorMove?: (x: number, y: number) => void;
   engine?: DrawingEngine | null;
   onEngineReady?: (engine: DrawingEngine) => void;
@@ -26,7 +25,6 @@ export default function DrawingCanvas({
   onDrawStart,
   onDrawStroke,
   onDrawEnd,
-  onRemoteOperation,
   onCursorMove,
   engine: externalEngine,
   onEngineReady
@@ -35,7 +33,8 @@ export default function DrawingCanvas({
   const [engine, setEngine] = useState<DrawingEngine | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const currentOperationId = useRef<string | null>(null);
-  const throttleTimer = useRef<number | null>(null);
+  const strokeBatchTimer = useRef<number | null>(null);
+  const lastBroadcastTime = useRef<number>(0);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -55,7 +54,7 @@ export default function DrawingCanvas({
     };
   }, [externalEngine, onEngineReady]);
 
-  const getCanvasCoordinates = useCallback((e: React.MouseEvent<HTMLCanvasElement>): Point => {
+  const getCanvasCoordinates = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     
@@ -74,6 +73,7 @@ export default function DrawingCanvas({
     currentOperationId.current = nanoid();
     engine.startPath(x, y);
     setIsDrawing(true);
+    lastBroadcastTime.current = 0;
     
     onDrawStart?.(currentOperationId.current);
   }, [engine, getCanvasCoordinates, onDrawStart]);
@@ -84,33 +84,34 @@ export default function DrawingCanvas({
     const { x, y } = getCanvasCoordinates(e);
     engine.addPoint(x, y);
 
-    // Create operation for current stroke state
-    const operation: DrawingOperation = {
+    // Draw preview locally (without adding to history yet)
+    const previewOp: DrawingOperation = {
       id: currentOperationId.current,
-      userId: 'local', // Will be set by WebSocket client
+      userId: 'local',
       type: tool === 'eraser' ? 'erase' : 'stroke',
-      points: engine.endPath(),
+      points: engine.getCurrentPath(),
       color,
       width: strokeWidth,
       timestamp: Date.now()
     };
 
-    // Draw locally
-    engine.drawOperation(operation, true);
-    
-    // Restart path for continuous drawing
-    engine.startPath(x, y);
+    engine.drawPreview(previewOp);
 
-    // Throttle stroke events to reduce network traffic
-    if (throttleTimer.current) {
-      clearTimeout(throttleTimer.current);
+    // Throttle network broadcasts to ~60fps (16ms)
+    const now = Date.now();
+    if (now - lastBroadcastTime.current >= 16) {
+      lastBroadcastTime.current = now;
+      
+      if (strokeBatchTimer.current) {
+        clearTimeout(strokeBatchTimer.current);
+      }
+      
+      strokeBatchTimer.current = window.setTimeout(() => {
+        onDrawStroke?.(previewOp);
+      }, 16);
     }
-    
-    throttleTimer.current = window.setTimeout(() => {
-      onDrawStroke?.(operation);
-    }, 16); // ~60fps throttle
 
-    // Handle cursor movement
+    // Update cursor position
     onCursorMove?.(x, y);
   }, [isDrawing, engine, tool, color, strokeWidth, getCanvasCoordinates, onDrawStroke, onCursorMove]);
 
@@ -130,20 +131,21 @@ export default function DrawingCanvas({
         timestamp: Date.now()
       };
 
+      // Add to local history
       engine.addOperationToHistory(operation);
+      
+      // Broadcast final operation
       onDrawEnd?.(operation);
     }
 
     setIsDrawing(false);
     currentOperationId.current = null;
-  }, [isDrawing, engine, tool, color, strokeWidth, onDrawEnd]);
-
-  // Handle remote operations
-  useEffect(() => {
-    if (onRemoteOperation && engine) {
-      // This effect is handled by parent component
+    
+    if (strokeBatchTimer.current) {
+      clearTimeout(strokeBatchTimer.current);
+      strokeBatchTimer.current = null;
     }
-  }, [onRemoteOperation, engine]);
+  }, [isDrawing, engine, tool, color, strokeWidth, onDrawEnd]);
 
   const cursorClass = tool === 'eraser' ? 'cursor-eraser' : 'cursor-crosshair';
 

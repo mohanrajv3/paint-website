@@ -45,41 +45,51 @@ export class DrawingEngine {
     this.currentPath.push({ x, y });
   }
 
+  getCurrentPath(): Point[] {
+    return [...this.currentPath];
+  }
+
   endPath(): Point[] {
     const path = [...this.currentPath];
     this.currentPath = [];
     return path;
   }
 
-  drawOperation(operation: DrawingOperation, isPreview: boolean = false) {
-    if (operation.points.length < 2) return;
+  private renderPath(points: Point[], color: string, width: number, type: 'stroke' | 'erase') {
+    if (points.length < 1) return;
 
     this.ctx.save();
     
-    if (operation.type === 'erase') {
+    if (type === 'erase') {
       this.ctx.globalCompositeOperation = 'destination-out';
-      this.ctx.lineWidth = operation.width * 2;
+      this.ctx.lineWidth = width * 2;
     } else {
       this.ctx.globalCompositeOperation = 'source-over';
-      this.ctx.strokeStyle = operation.color;
-      this.ctx.lineWidth = operation.width;
+      this.ctx.strokeStyle = color;
+      this.ctx.lineWidth = width;
     }
 
     this.ctx.lineCap = 'round';
     this.ctx.lineJoin = 'round';
 
-    // Optimized path rendering with quadratic curves for smoothness
     this.ctx.beginPath();
-    this.ctx.moveTo(operation.points[0].x, operation.points[0].y);
-
-    if (operation.points.length === 2) {
-      // Simple line for just two points
-      this.ctx.lineTo(operation.points[1].x, operation.points[1].y);
+    
+    if (points.length === 1) {
+      // Single point - draw a dot
+      this.ctx.arc(points[0].x, points[0].y, width / 2, 0, Math.PI * 2);
+      this.ctx.fill();
+    } else if (points.length === 2) {
+      // Two points - simple line
+      this.ctx.moveTo(points[0].x, points[0].y);
+      this.ctx.lineTo(points[1].x, points[1].y);
+      this.ctx.stroke();
     } else {
-      // Smooth curve through points
-      for (let i = 1; i < operation.points.length - 1; i++) {
-        const currentPoint = operation.points[i];
-        const nextPoint = operation.points[i + 1];
+      // Multiple points - smooth curve
+      this.ctx.moveTo(points[0].x, points[0].y);
+      
+      for (let i = 1; i < points.length - 1; i++) {
+        const currentPoint = points[i];
+        const nextPoint = points[i + 1];
         const midX = (currentPoint.x + nextPoint.x) / 2;
         const midY = (currentPoint.y + nextPoint.y) / 2;
         
@@ -87,23 +97,28 @@ export class DrawingEngine {
       }
       
       // Draw to last point
-      const lastPoint = operation.points[operation.points.length - 1];
+      const lastPoint = points[points.length - 1];
       this.ctx.lineTo(lastPoint.x, lastPoint.y);
+      this.ctx.stroke();
     }
 
-    this.ctx.stroke();
     this.ctx.restore();
+  }
 
-    if (!isPreview) {
-      this.operations.push(operation);
-      this.redoStack = []; // Clear redo stack on new operation
-    }
+  drawOperation(operation: DrawingOperation) {
+    this.renderPath(operation.points, operation.color, operation.width, operation.type);
+  }
+
+  drawPreview(operation: DrawingOperation) {
+    // For preview, we need to redraw everything to avoid artifacts
+    this.redrawAll();
+    this.renderPath(operation.points, operation.color, operation.width, operation.type);
   }
 
   redrawAll() {
     this.clearCanvas();
     for (const operation of this.operations) {
-      this.drawOperation(operation, true);
+      this.renderPath(operation.points, operation.color, operation.width, operation.type);
     }
   }
 
@@ -126,7 +141,7 @@ export class DrawingEngine {
     const operation = this.redoStack.pop();
     if (operation) {
       this.operations.push(operation);
-      this.drawOperation(operation, true);
+      this.renderPath(operation.points, operation.color, operation.width, operation.type);
       return operation;
     }
     return null;
@@ -141,7 +156,7 @@ export class DrawingEngine {
   }
 
   syncOperations(operations: DrawingOperation[]) {
-    this.operations = operations;
+    this.operations = [...operations];
     this.redoStack = [];
     this.redrawAll();
   }

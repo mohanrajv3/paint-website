@@ -92,7 +92,7 @@ export default function Canvas() {
 
     client.on('onDrawStroke', (operation) => {
       if (drawingEngine.current) {
-        drawingEngine.current.drawOperation(operation, true);
+        drawingEngine.current.drawPreview(operation);
       }
     });
 
@@ -105,6 +105,7 @@ export default function Canvas() {
       
       if (drawingEngine.current) {
         drawingEngine.current.addOperationToHistory(data.operation);
+        drawingEngine.current.redrawAll();
       }
     });
 
@@ -121,7 +122,7 @@ export default function Canvas() {
     client.on('onRedo', (data) => {
       if (drawingEngine.current) {
         drawingEngine.current.addOperationToHistory(data.operation);
-        drawingEngine.current.drawOperation(data.operation, true);
+        drawingEngine.current.redrawAll();
       }
     });
 
