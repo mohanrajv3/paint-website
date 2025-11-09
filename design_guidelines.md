@@ -3,7 +3,7 @@
 ## Design Approach
 
 **Selected Approach**: Experience-focused with creative tool aesthetics inspired by Figma, Miro, and Procreate
-**Core Principle**: Premium, vibrant interface that energizes creativity while maintaining professional polish
+**Core Principle**: A clean and vibrant interface that is intuitive and easy to use.
 
 ## Typography
 
@@ -95,15 +95,6 @@ Apply to all floating panels:
 - Focus indicators on all interactive elements (2px colored outline)
 - ARIA labels for icon-only buttons
 - Color-blind friendly user color palette option
-
-## Premium Details
-
-- Smooth gradient backgrounds for control panels (subtle 5-10% color shifts)
-- Micro-interactions: Tools "bounce" slightly on selection
-- Polished icons from Heroicons (outline style for inactive, solid for active)
-- Custom cursor designs for different tools (not system defaults)
-- Glow effects on active drawing area boundaries
-- Professional loading states with skeleton screens
 
 ## Mobile Considerations
 
