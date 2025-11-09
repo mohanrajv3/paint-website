@@ -1,13 +1,21 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { cn } from '@/lib/utils';
+import { DrawingEngine, Point } from '@/lib/drawingEngine';
+import { type DrawingOperation } from '@shared/schema';
+import { nanoid } from 'nanoid';
 
 interface DrawingCanvasProps {
   tool: 'brush' | 'eraser';
   color: string;
   strokeWidth: number;
   className?: string;
-  onDrawStart?: () => void;
-  onDrawEnd?: () => void;
+  onDrawStart?: (operationId: string) => void;
+  onDrawStroke?: (operation: DrawingOperation) => void;
+  onDrawEnd?: (operation: DrawingOperation) => void;
+  onRemoteOperation?: (operation: DrawingOperation) => void;
+  onCursorMove?: (x: number, y: number) => void;
+  engine?: DrawingEngine | null;
+  onEngineReady?: (engine: DrawingEngine) => void;
 }
 
 export default function DrawingCanvas({
@@ -16,82 +24,126 @@ export default function DrawingCanvas({
   strokeWidth,
   className,
   onDrawStart,
-  onDrawEnd
+  onDrawStroke,
+  onDrawEnd,
+  onRemoteOperation,
+  onCursorMove,
+  engine: externalEngine,
+  onEngineReady
 }: DrawingCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [engine, setEngine] = useState<DrawingEngine | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [context, setContext] = useState<CanvasRenderingContext2D | null>(null);
+  const currentOperationId = useRef<string | null>(null);
+  const throttleTimer = useRef<number | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const drawEngine = externalEngine || new DrawingEngine(canvas);
+    setEngine(drawEngine);
+    onEngineReady?.(drawEngine);
 
-    const resizeCanvas = () => {
-      const rect = canvas.getBoundingClientRect();
-      canvas.width = rect.width * window.devicePixelRatio;
-      canvas.height = rect.height * window.devicePixelRatio;
-      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const handleResize = () => {
+      drawEngine.resize(canvas);
     };
 
-    resizeCanvas();
-    setContext(ctx);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [externalEngine, onEngineReady]);
 
-    window.addEventListener('resize', resizeCanvas);
-    return () => window.removeEventListener('resize', resizeCanvas);
+  const getCanvasCoordinates = useCallback((e: React.MouseEvent<HTMLCanvasElement>): Point => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
+    };
   }, []);
 
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!context) return;
+  const startDrawing = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!engine) return;
+    
+    const { x, y } = getCanvasCoordinates(e);
+    
+    currentOperationId.current = nanoid();
+    engine.startPath(x, y);
     setIsDrawing(true);
-    onDrawStart?.();
     
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    onDrawStart?.(currentOperationId.current);
+  }, [engine, getCanvasCoordinates, onDrawStart]);
+
+  const draw = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawing || !engine || !currentOperationId.current) return;
+
+    const { x, y } = getCanvasCoordinates(e);
+    engine.addPoint(x, y);
+
+    // Create operation for current stroke state
+    const operation: DrawingOperation = {
+      id: currentOperationId.current,
+      userId: 'local', // Will be set by WebSocket client
+      type: tool === 'eraser' ? 'erase' : 'stroke',
+      points: engine.endPath(),
+      color,
+      width: strokeWidth,
+      timestamp: Date.now()
+    };
+
+    // Draw locally
+    engine.drawOperation(operation, true);
     
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    // Restart path for continuous drawing
+    engine.startPath(x, y);
 
-    context.beginPath();
-    context.moveTo(x, y);
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
-  };
+    // Throttle stroke events to reduce network traffic
+    if (throttleTimer.current) {
+      clearTimeout(throttleTimer.current);
+    }
+    
+    throttleTimer.current = window.setTimeout(() => {
+      onDrawStroke?.(operation);
+    }, 16); // ~60fps throttle
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !context) return;
+    // Handle cursor movement
+    onCursorMove?.(x, y);
+  }, [isDrawing, engine, tool, color, strokeWidth, getCanvasCoordinates, onDrawStroke, onCursorMove]);
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+  const stopDrawing = useCallback(() => {
+    if (!isDrawing || !engine || !currentOperationId.current) return;
 
-    const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const points = engine.endPath();
+    
+    if (points.length > 0) {
+      const operation: DrawingOperation = {
+        id: currentOperationId.current,
+        userId: 'local',
+        type: tool === 'eraser' ? 'erase' : 'stroke',
+        points,
+        color,
+        width: strokeWidth,
+        timestamp: Date.now()
+      };
 
-    if (tool === 'eraser') {
-      context.globalCompositeOperation = 'destination-out';
-      context.lineWidth = strokeWidth * 2;
-    } else {
-      context.globalCompositeOperation = 'source-over';
-      context.strokeStyle = color;
-      context.lineWidth = strokeWidth;
+      engine.addOperationToHistory(operation);
+      onDrawEnd?.(operation);
     }
 
-    context.lineTo(x, y);
-    context.stroke();
-  };
-
-  const stopDrawing = () => {
-    if (!isDrawing) return;
     setIsDrawing(false);
-    onDrawEnd?.();
-    context?.closePath();
-  };
+    currentOperationId.current = null;
+  }, [isDrawing, engine, tool, color, strokeWidth, onDrawEnd]);
+
+  // Handle remote operations
+  useEffect(() => {
+    if (onRemoteOperation && engine) {
+      // This effect is handled by parent component
+    }
+  }, [onRemoteOperation, engine]);
 
   const cursorClass = tool === 'eraser' ? 'cursor-eraser' : 'cursor-crosshair';
 
